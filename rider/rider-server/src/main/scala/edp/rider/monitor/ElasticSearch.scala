@@ -22,16 +22,16 @@
 package edp.rider.monitor
 
 import akka.http.scaladsl.Http
-import akka.http.scaladsl.model.headers.BasicHttpCredentials
 import akka.http.scaladsl.model._
+import akka.http.scaladsl.model.headers.BasicHttpCredentials
 import akka.http.scaladsl.unmarshalling._
 import akka.util.ByteString
 import edp.rider.RiderStarter._
 import edp.rider.common.{RiderConfig, RiderEs, RiderLogger}
-import edp.rider.rest.persistence.entities.{Interval, MonitorInfo}
+import edp.rider.rest.persistence.entities.MonitorInfo
 import edp.rider.rest.util.CommonUtils
 import edp.wormhole.util.JsonUtils
-import org.json4s.JsonAST.{JNothing, JNull}
+import org.json4s.JsonAST.JNull
 import org.json4s.{DefaultFormats, Formats, JValue}
 
 import scala.collection.mutable.ListBuffer
@@ -198,7 +198,6 @@ object ElasticSearch extends RiderLogger {
       val url = getESUrl + "_search"
       riderLogger.debug(s"queryESStreamMonitor url $url $postBody")
       val response = syncToES(postBody, url, HttpMethods.POST, CommonUtils.minTimeOut)
-      riderLogger.info(s"response:$response")
       if (response._1) {
         val tuple = JsonUtils.getJValue(JsonUtils.getJValue(response._2, "hits"), "hits").children
         implicit val json4sFormats: Formats = DefaultFormats
@@ -300,7 +299,6 @@ object ElasticSearch extends RiderLogger {
       entity = HttpEntity.apply(ContentTypes.`application/json`, ByteString(postBody))
     ).addCredentials(BasicHttpCredentials(RiderConfig.es.user, RiderConfig.es.pwd))
     val response = Await.result(Http().singleRequest(httpRequest), timeOut)
-    riderLogger.info(s"response status:${response.status},type:${response.entity.contentType}")
     try {
       response.status match {
         case StatusCodes.OK if (response.entity.contentType == ContentTypes.`application/json`) =>

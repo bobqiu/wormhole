@@ -119,12 +119,12 @@ class NamespaceDal(namespaceTable: TableQuery[NamespaceTable],
   }
 
   def updateUmsInfo(id: Long, umsInfo: SourceSchema, user: Long): Future[Int] = {
-    val schema = Option(caseClass2json[SourceSchema](umsInfo))
+    val schema = if (umsInfo == null) null else Option(caseClass2json[SourceSchema](umsInfo))
     db.run(namespaceTable.filter(_.id === id).map(ns => (ns.umsInfo, ns.updateTime, ns.updateBy)).update(schema, currentSec, user)).mapTo[Int]
   }
 
   def updateSinkInfo(id: Long, sinkInfo: SinkSchema, user: Long): Future[Int] = {
-    val schema = Option(caseClass2json[SinkSchema](sinkInfo))
+    val schema = if (sinkInfo == null) null else Option(caseClass2json[SinkSchema](sinkInfo))
     db.run(namespaceTable.filter(_.id === id).map(ns => (ns.sinkInfo, ns.updateTime, ns.updateBy)).update(schema, currentSec, user)).mapTo[Int]
   }
 
@@ -185,13 +185,16 @@ class NamespaceDal(namespaceTable: TableQuery[NamespaceTable],
       dbSeq.foreach(db => topicIdMap.put(db.nsDatabase, db.id))
 
       val dbusSearch = Await.result(dbusDal.findAll, minTimeOut)
+
       syncDbusSeq.foreach(simple => {
-        val dbusExist = dbusSearch.filter(dbus => dbus.namespace.split("\\.").take(4).mkString(".") == simple.namespace.split("\\.").take(4).mkString("."))
+        val dbusExist =
+          dbusSearch.filter(dbus => dbus.namespace.split("\\.").take(4).mkString(".") == simple.namespace.split("\\.").take(4).mkString("."))
         if (dbusExist.isEmpty) {
-          riderLogger.info("simple: " + simple)
-          dbusSeq += Dbus(0, simple.id, simple.namespace, simple.kafka, simple.topic, kafkaIdMap(simple.kafka), topicIdMap(simple.topic), simple.createTime, currentSec)
-        }
-        else {
+          //          riderLogger.info("simple: " + simple)
+          if (!dbusSeq.exists(insert => insert.namespace == simple.namespace)) {
+            dbusSeq += Dbus(0, simple.id, simple.namespace, simple.kafka, simple.topic, kafkaIdMap(simple.kafka), topicIdMap(simple.topic), simple.createTime, currentSec)
+          }
+        } else {
           val dbusUpdate = dbusExist.filter(dbus => dbus.kafka == simple.kafka && dbus.topic == simple.topic && dbus.namespace == simple.namespace)
           if (dbusUpdate.isEmpty)
             dbusUpdateSeq += Dbus(dbusExist.head.id, simple.id, simple.namespace, simple.kafka, simple.topic, kafkaIdMap(simple.kafka), topicIdMap(simple.topic), simple.createTime, currentSec)
@@ -199,9 +202,10 @@ class NamespaceDal(namespaceTable: TableQuery[NamespaceTable],
       })
 
       riderLogger.info("dbus insert size: " + dbusSeq.size)
-      val dbusInsertSeq = Await.result(dbusDal.insert(dbusSeq), maxTimeOut)
+      val dbusInsertSeq = Await.result(dbusDal.insert(dbusSeq.sortBy(_.dbusId)), maxTimeOut)
       riderLogger.info("dbus update size: " + dbusUpdateSeq.size)
       Await.result(dbusDal.update(dbusUpdateSeq), minTimeOut)
+      riderLogger.info(s"user ${session.userId} insertOrUpdate dbus table success.")
       Future(dbusInsertSeq ++ dbusUpdateSeq)
     } catch {
       case ex: Exception =>
@@ -215,7 +219,7 @@ class NamespaceDal(namespaceTable: TableQuery[NamespaceTable],
     val namespace = Await.result(super.findAll, minTimeOut)
     val insertSeq = new ArrayBuffer[Namespace]()
     val updateSeq = new ArrayBuffer[Namespace]()
-    dbusSeq.map(dbus => {
+    dbusSeq.foreach(dbus => {
       val nsSplit: Array[String] = dbus.namespace.split("\\.")
       val nsSearch = namespace.filter(ns => ns.nsSys == nsSplit(0) && ns.nsInstance == nsSplit(1) && ns.nsDatabase == nsSplit(2) && ns.nsTable == nsSplit(3))
       if (nsSearch.isEmpty)

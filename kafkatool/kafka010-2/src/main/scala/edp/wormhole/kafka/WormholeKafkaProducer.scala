@@ -44,12 +44,45 @@ object WormholeKafkaProducer extends Serializable {
     props
   }
 
+  private def getProducerPropsWithoutAcksAll: Properties = {
+    val props = new Properties()
+    props.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer")
+    props.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer")
+    props.put("acks", "1")
+    props.put("compression.type", "lz4")
+    props
+  }
+
   def init(brokers: String, kvConfig: Option[Seq[KVConfig]], kerberos: Boolean = false): Unit = {
 
     if (!producerMap.contains(brokers) || producerMap(brokers) == null) {
       synchronized {
         if (!producerMap.contains(brokers) || producerMap(brokers) == null) {
           val props = getProducerProps
+          if (kvConfig.nonEmpty) {
+            kvConfig.get.foreach(kv => {
+              props.put(kv.key, kv.value)
+            })
+          }
+
+          if (kerberos) {
+            props.put("security.protocol", "SASL_PLAINTEXT")
+            props.put("sasl.kerberos.service.name", "kafka")
+          }
+
+          props.put("bootstrap.servers", brokers)
+          producerMap(brokers) = new KafkaProducer[String, String](props)
+        }
+      }
+    }
+  }
+
+  def initWithoutAcksAll(brokers: String, kvConfig: Option[Seq[KVConfig]], kerberos: Boolean = false): Unit = {
+
+    if (!producerMap.contains(brokers) || producerMap(brokers) == null) {
+      synchronized {
+        if (!producerMap.contains(brokers) || producerMap(brokers) == null) {
+          val props = getProducerPropsWithoutAcksAll
           if (kvConfig.nonEmpty) {
             kvConfig.get.foreach(kv => {
               props.put(kv.key, kv.value)
@@ -88,8 +121,6 @@ object WormholeKafkaProducer extends Serializable {
 
   private def send(topic: String, partition: Int, message: String, key: Option[String], brokers: String): Any = {
     try {
-      println(s"broker:${brokers},partition:${partition},key:${key},msg:${message}")
-      logger.info(s"broker:${brokers},partition:${partition},key:${key},msg:${message}")
       sendInternal(topic, partition, message, key, brokers)
     } catch {
       case _: Throwable =>

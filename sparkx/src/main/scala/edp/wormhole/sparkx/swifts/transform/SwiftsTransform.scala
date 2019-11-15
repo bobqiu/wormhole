@@ -23,7 +23,6 @@ package edp.wormhole.sparkx.swifts.transform
 
 import java.util.UUID
 
-import com.alibaba.fastjson.JSON
 import edp.wormhole.sparkx.common.{SparkxUtils, WormholeConfig}
 import edp.wormhole.sparkx.memorystorage.ConfMemoryStorage
 import edp.wormhole.sparkx.spark.log.EdpLogging
@@ -32,7 +31,6 @@ import edp.wormhole.sparkxinterface.swifts.SwiftsSpecialProcessConfig
 import edp.wormhole.swifts.{ConnectionMemoryStorage, SqlOptType}
 import edp.wormhole.ums.UmsDataSystem
 import edp.wormhole.util.JsonUtils
-import edp.wormhole.util.JsonUtils.caseClass2json
 import edp.wormhole.util.swifts.SwiftsSql
 import org.apache.spark.sql._
 
@@ -45,7 +43,11 @@ object SwiftsTransform extends EdpLogging {
     val swiftsLogic = ConfMemoryStorage.getSwiftsLogic(matchSourceNamespace, sinkNamespace)
     val swiftsSqlArr = swiftsLogic.swiftsSql
     val dataSetShow = swiftsLogic.datasetShow
-    val batchSize = (if (swiftsLogic.specialConfig.isDefined && !swiftsLogic.specialConfig.get.isEmpty) JsonUtils.json2caseClass[SwiftsSpecialProcessConfig](swiftsLogic.specialConfig.get) else new SwiftsSpecialProcessConfig()).batchSize
+    val batchSize =
+      (if (swiftsLogic.specialConfig.isDefined && !swiftsLogic.specialConfig.get.isEmpty)
+        JsonUtils.json2caseClass[SwiftsSpecialProcessConfig](swiftsLogic.specialConfig.get)
+      else new SwiftsSpecialProcessConfig()).batchSize
+
     val dataSetShowNum = if (dataSetShow.get) swiftsLogic.datasetShowNum.get else -1
     var currentDf = df
     var cacheDf = df
@@ -62,8 +64,13 @@ object SwiftsTransform extends EdpLogging {
         try {
           SqlOptType.toSqlOptType(operate.optType) match {
             case SqlOptType.CUSTOM_CLASS =>
-              val (obj, method) = ConfMemoryStorage.getSwiftsTransformReflectValue(operate.sql)
-              currentDf = method.invoke(obj, session, currentDf, swiftsLogic).asInstanceOf[DataFrame]
+              val (obj, method,param) = ConfMemoryStorage.getSwiftsTransformReflectValue(operate.sql)
+
+              currentDf = if(param.isEmpty){method.invoke(obj, session, currentDf, swiftsLogic).asInstanceOf[DataFrame]}
+              else {
+                logInfo("Transform get Param :" + param)
+                method.invoke(obj, session, currentDf, swiftsLogic,param).asInstanceOf[DataFrame]}
+
             case SqlOptType.JOIN | SqlOptType.LEFT_JOIN | SqlOptType.RIGHT_JOIN =>
               if (ConfMemoryStorage.existStreamLookup(matchSourceNamespace, sinkNamespace, lookupNamespace)) {
                 // lookup Namespace is also match rule format .*.*
@@ -95,9 +102,9 @@ object SwiftsTransform extends EdpLogging {
                 //  val jsonSchema = JsonSchemaObtain.getJsonSchema(schema)
                 UmsDataSystem.dataSystem(lookupNameSpaceArr(0).toLowerCase()) match {
                   case UmsDataSystem.CASSANDRA =>
-                    currentDf = DataFrameTransform.getDbJoinOrUnionDf(session, currentDf, sourceTableFields, lookupTableFields, sql, connectionConfig, schema, operate, UmsDataSystem.CASSANDRA)
+                    currentDf = DataFrameTransform.getDbJoinOrUnionDf(session, currentDf, sourceTableFields, lookupTableFields, sql, connectionConfig, schema, operate, UmsDataSystem.CASSANDRA, Some(batchSize))
                   case UmsDataSystem.ORACLE =>
-                    currentDf = DataFrameTransform.getDbJoinOrUnionDf(session, currentDf, sourceTableFields, lookupTableFields, sql, connectionConfig, schema, operate, UmsDataSystem.ORACLE)
+                    currentDf = DataFrameTransform.getDbJoinOrUnionDf(session, currentDf, sourceTableFields, lookupTableFields, sql, connectionConfig, schema, operate, UmsDataSystem.ORACLE, Some(batchSize))
                   case UmsDataSystem.HBASE =>
                     currentDf = LookupHbase.transform(session, currentDf, operate, sourceNamespace, sinkNamespace, connectionConfig)
                   case UmsDataSystem.REDIS =>
@@ -122,11 +129,13 @@ object SwiftsTransform extends EdpLogging {
               //       val jsonSchema = JsonSchemaObtain.getJsonSchema(schema)
               UmsDataSystem.dataSystem(lookupNameSpaceArr(0).toLowerCase()) match {
                 case UmsDataSystem.CASSANDRA =>
-                  currentDf = DataFrameTransform.getDbJoinOrUnionDf(session, currentDf, sourceTableFields, lookupTableFields, sql, connectionConfig, schema, operate, UmsDataSystem.CASSANDRA)
+                  currentDf = DataFrameTransform.getDbJoinOrUnionDf(session, currentDf, sourceTableFields, lookupTableFields, sql, connectionConfig, schema, operate, UmsDataSystem.CASSANDRA, Some(batchSize))
                 case UmsDataSystem.ORACLE =>
-                  currentDf = DataFrameTransform.getDbJoinOrUnionDf(session, currentDf, sourceTableFields, lookupTableFields, sql, connectionConfig, schema, operate, UmsDataSystem.ORACLE)
+                  currentDf = DataFrameTransform.getDbJoinOrUnionDf(session, currentDf, sourceTableFields, lookupTableFields, sql, connectionConfig, schema, operate, UmsDataSystem.ORACLE, Some(batchSize))
+                case UmsDataSystem.KUDU =>
+                  currentDf = DataFrameTransform.getKUDUUnionDf(session, currentDf, sourceTableFields, lookupTableFields, sql, connectionConfig, schema, operate, Some(batchSize))
                 case _ =>
-                  currentDf = DataFrameTransform.getDbJoinOrUnionDf(session, currentDf, sourceTableFields, lookupTableFields, sql, connectionConfig, schema, operate, UmsDataSystem.MYSQL)
+                  currentDf = DataFrameTransform.getDbJoinOrUnionDf(session, currentDf, sourceTableFields, lookupTableFields, sql, connectionConfig, schema, operate, UmsDataSystem.MYSQL, Some(batchSize))
               }
             case _ => logWarning(uuid + ",operate.optType:" + operate.optType + " is not supported")
           }

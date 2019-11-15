@@ -1,11 +1,7 @@
 package edp.wormhole.flinkx.common
 
-import java.util.UUID
-
-import edp.wormhole.common.feedback.ErrorPattern
 import edp.wormhole.flinkx.common.ExceptionProcessMethod.ExceptionProcessMethod
 import edp.wormhole.kafka.WormholeKafkaProducer
-import edp.wormhole.ums.UmsProtocolType
 import org.apache.flink.api.common.functions.RichMapFunction
 import org.apache.log4j.Logger
 
@@ -20,7 +16,7 @@ class ExceptionProcess(exceptionProcessMethod: ExceptionProcessMethod, config: W
       case ExceptionProcessMethod.INTERRUPT =>
         throw new Throwable("process error")
       case ExceptionProcessMethod.FEEDBACK =>
-        WormholeKafkaProducer.init(config.kafka_output.brokers, config.kafka_output.config)
+        WormholeKafkaProducer.initWithoutAcksAll(config.kafka_output.brokers, config.kafka_output.config, config.kerberos)
         FlinkxUtils.sendFlowErrorMessage(feedbackFlowFlinkxError,  config, exceptionConfig.flowId)
       case _ =>
         logger.info("exception process method is: " + exceptionProcessMethod)

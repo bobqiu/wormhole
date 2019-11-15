@@ -26,14 +26,13 @@ import edp.rider.common.{HistoryDelete, RiderLogger, Stop, RefreshYarn}
 
 class SchedulerActor extends Actor with RiderLogger {
 
-
   override def receive = {
     case HistoryDelete =>
       ScheduledTask.deleteHistory
       riderLogger.info(s"Rider delete feedback data timer scheduler ${new java.util.Date().toString} start")
 
     case RefreshYarn =>
-      ScheduledTask.updateStreamStatusByYarn
+      ScheduledTask.updateAllStatusByYarn
       //riderLogger.info(s"Rider update stream status by yarn app status ${new java.util.Date().toString} start")
 
     case Stop =>

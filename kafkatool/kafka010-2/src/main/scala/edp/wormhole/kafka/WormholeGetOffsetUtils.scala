@@ -61,6 +61,7 @@ object WormholeGetOffsetUtils {
       props.put(ConsumerConfig.SESSION_TIMEOUT_MS_CONFIG, maxWaitMs.toString)
       props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false")
       props.put(ConsumerConfig.REQUEST_TIMEOUT_MS_CONFIG, "80000")
+
       if (kerberos) {
         props.put(CommonClientConfigs.SECURITY_PROTOCOL_CONFIG, "SASL_PLAINTEXT")
         props.put("sasl.kerberos.service.name", "kafka")
@@ -69,7 +70,6 @@ object WormholeGetOffsetUtils {
       val consumer = new KafkaConsumer[String, String](props)
       val offsetSeq = new ListBuffer[String]()
       val topicMap = consumer.listTopics()
-
       if (!topicMap.isEmpty && topicMap.containsKey(topic) && topicMap.get(topic) != null && topicMap.get(topic).size() > 0) {
         val it = topicMap.get(topic).iterator()
         while (it.hasNext) {

@@ -24,6 +24,7 @@ package edp.rider.rest.util
 import com.alibaba.fastjson.{JSON, JSONArray, JSONObject}
 import edp.rider.RiderStarter.modules._
 import edp.rider.common._
+import edp.rider.kafka.WormholeGetOffsetUtils._
 import edp.rider.rest.persistence.entities._
 import edp.rider.rest.util.CommonUtils._
 import edp.rider.rest.util.NamespaceUtils._
@@ -31,10 +32,9 @@ import edp.rider.rest.util.NsDatabaseUtils._
 import edp.rider.rest.util.StreamUtils._
 import edp.rider.wormhole._
 import edp.rider.yarn.SubmitYarnJob._
-import edp.rider.yarn.YarnClientLog
+import edp.rider.yarn.{ShellUtils, YarnClientLog}
 import edp.rider.yarn.YarnStatusQuery._
 import edp.rider.zookeeper.PushDirective
-import edp.wormhole.kafka.WormholeGetOffsetUtils._
 import edp.wormhole.ums.UmsProtocolType._
 import edp.wormhole.util.CommonUtils._
 import edp.wormhole.util.DateUtils._
@@ -214,6 +214,7 @@ object FlowUtils extends RiderLogger {
         nsSys match {
           case "cassandra" => "edp.wormhole.sinks.cassandrasink.Data2CassandraSink"
           case "mysql" | "oracle" | "postgresql" | "vertica" | "greenplum" => "edp.wormhole.sinks.dbsink.Data2DbSink"
+          case "clickhouse" => "edp.wormhole.sinks.clickhousesink.Data2ClickhouseSink"
           case "es" =>
             if (sinkSchema.nonEmpty && sinkSchema.get != "") "edp.wormhole.sinks.elasticsearchsink.DataJson2EsSink"
             else "edp.wormhole.sinks.elasticsearchsink.Data2EsSink"
@@ -232,7 +233,7 @@ object FlowUtils extends RiderLogger {
   }
 
   def actionRule(flowStream: FlowStream, action: String): FlowInfo = {
-    if (flowStream.disableActions.contains("modify") && action == "refresh")
+    var flowInfo = if (flowStream.disableActions.contains("modify") && action == "refresh")
       FlowInfo(flowStream.id, flowStream.status, flowStream.disableActions, flowStream.startedTime, flowStream.stoppedTime, s"$action success.")
     else if (flowStream.disableActions.contains(action)) {
       FlowInfo(flowStream.id, flowStream.status, flowStream.disableActions, flowStream.startedTime, flowStream.stoppedTime, s"$action operation is refused.")
@@ -353,7 +354,7 @@ object FlowUtils extends RiderLogger {
           if (startFlinkFlow(flowStream.streamAppId.get, getFlowByFlowStream(flowStream)))
             FlowInfo(flowStream.id, "starting", "start,renew,stop,delete", Option(currentSec), None, s"$action success.")
           else
-            FlowInfo(flowStream.id, flowStream.status, flowStream.disableActions, flowStream.startedTime, flowStream.stoppedTime, "start failed")
+            FlowInfo(flowStream.id, "failed", "renew", flowStream.startedTime, flowStream.stoppedTime, "start failed")
 
         case (_, "failed", "stop") =>
           FlowInfo(flowStream.id, "stopped", "renew,stop", flowStream.startedTime, Option(currentSec), s"$action success.")
@@ -367,6 +368,9 @@ object FlowUtils extends RiderLogger {
           FlowInfo(flowStream.id, flowStream.status, flowStream.disableActions, flowStream.startedTime, flowStream.stoppedTime, s"$action isn't supported.")
       }
     }
+    if(flowInfo.flowStatus == flowStream.status && (!(flowStream.streamType == StreamType.FLINK.toString && flowStream.streamStatus == "running"))) {
+      new FlowInfo(flowInfo.id, flowInfo.flowStatus, flowInfo.disableActions, flowInfo.startTime, flowInfo.stopTime, flowInfo.msg, false)
+    } else flowInfo
   }
 
   def getDisableActions(flow: Flow): String = {
@@ -389,7 +393,7 @@ object FlowUtils extends RiderLogger {
       case StreamType.FLINK => s"${Action.RENEW},${Action.BATCHSELECT},${Action.DRIFT}"
       case StreamType.SPARK =>
         FunctionType.withName(functionType) match {
-          case FunctionType.HDFSLOG | FunctionType.ROUTIING =>
+          case FunctionType.HDFSLOG | FunctionType.ROUTIING | FunctionType.HDFSCSV =>
             s"${Action.DRIFT}"
           case FunctionType.DEFAULT => ""
         }
@@ -428,8 +432,8 @@ object FlowUtils extends RiderLogger {
   def startFlow(streamId: Long, streamName: String, functionType: String, flowId: Long, sourceNs: String, sinkNs: String, consumedProtocol: String, sinkConfig: String, tranConfig: String, tableKeys: String, userId: Long): Boolean = {
     try {
       autoDeleteTopic(userId, streamId)
-      val sourceNsDatabase=autoRegisterTopic(streamId, streamName, sourceNs, tranConfig, userId)
-      val sourceIncrementTopic=if(sourceNsDatabase.nonEmpty)sourceNsDatabase.head.nsDatabase else ""
+      val sourceNsDatabase = autoRegisterTopic(streamId, streamName, sourceNs, tranConfig, userId)
+      val sourceIncrementTopic = if (sourceNsDatabase.nonEmpty) sourceNsDatabase.head.nsDatabase else ""
       val sourceNsObj = namespaceDal.getNamespaceByNs(sourceNs).get
       val umsInfoOpt =
         if (sourceNsObj.sourceSchema.nonEmpty)
@@ -446,6 +450,8 @@ object FlowUtils extends RiderLogger {
         }
         case None => ""
       }
+      val flowOpt = Await.result(flowDal.findByFilter(flow => flow.active === true && flow.id === flowId), minTimeOut).headOption
+
       if (functionType == "default") {
         val consumedProtocolSet = getConsumptionType(consumedProtocol)
         val sinkConfigSet = getSinkConfig(sinkNs, sinkConfig, tableKeys)
@@ -454,7 +460,7 @@ object FlowUtils extends RiderLogger {
         val tranConfigFinal = getTranConfig(tranConfig)
         //        val tuple = Seq(streamId, currentMicroSec, umsType, umsSchema, sourceNs, sinkNs, consumedProtocolSet, sinkConfigSet, tranConfigFinal)
         val base64Tuple = Seq(streamId, flowId, sourceIncrementTopic, currentMicroSec, umsType, base64byte2s(umsSchema.toString.trim.getBytes), sinkNs, base64byte2s(consumedProtocolSet.trim.getBytes),
-          base64byte2s(sinkConfigSet.trim.getBytes), base64byte2s(tranConfigFinal.trim.getBytes), RiderConfig.kerberos.enabled)
+          base64byte2s(sinkConfigSet.trim.getBytes), base64byte2s(tranConfigFinal.trim.getBytes), RiderConfig.kerberos.kafkaEnabled, if (flowOpt.nonEmpty) flowOpt.get.priorityId else 0L)
         val directiveFuture = directiveDal.insert(Directive(0, DIRECTIVE_FLOW_START.toString, streamId, flowId, "", RiderConfig.zk.address, currentSec, userId))
         directiveFuture onComplete {
           case Success(directive) =>
@@ -527,6 +533,11 @@ object FlowUtils extends RiderLogger {
                  |"name": "kerberos",
                  |"type": "boolean",
                  |"nullable": true
+                 |},
+                 |{
+                 |"name": "priority_id",
+                 |"type": "long",
+                 |"nullable": true
                  |}
                  |]
                  |},
@@ -556,11 +567,13 @@ object FlowUtils extends RiderLogger {
                 base64Tuple(9)
               }","${
                 base64Tuple(10)
+              }","${
+                base64Tuple(11)
               }"]
                  |}
                  |]
                  |}
-        """.stripMargin.replaceAll("\n", "")
+        """.stripMargin.replaceAll("\n", "").replaceAll("\r", "")
             riderLogger.info(s"user ${
               directive.createBy
             } send flow $flowId start directive: $flow_start_ums")
@@ -573,7 +586,9 @@ object FlowUtils extends RiderLogger {
       }
       else if (functionType == "hdfslog") {
         //        val tuple = Seq(streamId, currentMillSec, sourceNs, "24", umsType, umsSchema)
-        val base64Tuple = Seq(streamId, flowId, currentMillSec, sourceNs, "24", umsType, base64byte2s(umsSchema.toString.trim.getBytes), sourceIncrementTopic)
+        val base64Tuple = Seq(streamId, flowId, currentMillSec, sourceNs, "24", umsType,
+          base64byte2s(umsSchema.toString.trim.getBytes), sourceIncrementTopic,
+          if (flowOpt.nonEmpty) flowOpt.get.priorityId else 0L)
         val directive = Await.result(directiveDal.insert(Directive(0, DIRECTIVE_HDFSLOG_FLOW_START.toString, streamId, flowId, "", RiderConfig.zk.address, currentSec, userId)), minTimeOut)
         //        riderLogger.info(s"user ${directive.createBy} insert ${DIRECTIVE_HDFSLOG_FLOW_START.toString} success.")
         val flow_start_ums =
@@ -629,6 +644,11 @@ object FlowUtils extends RiderLogger {
              |"name": "source_increment_topic",
              |"type": "string",
              |"nullable": true
+             |},
+             |{
+             |"name": "priority_id",
+             |"type": "long",
+             |"nullable": true
              |}
              |]
              |},
@@ -652,19 +672,119 @@ object FlowUtils extends RiderLogger {
             base64Tuple(6)
           }", "${
             base64Tuple(7)
+          }", "${
+            base64Tuple(8)
           }"]
              |}
              |]
              |}
-        """.stripMargin.replaceAll("\n", "")
+        """.stripMargin.replaceAll("\n", "").replaceAll("\r", "")
         riderLogger.info(s"user ${
           directive.createBy
         } send flow $flowId start directive: $flow_start_ums")
         PushDirective.sendHdfsLogFlowStartDirective(flowId, streamId, sourceNs, jsonCompact(flow_start_ums))
         //        riderLogger.info(s"user ${directive.createBy} send ${DIRECTIVE_HDFSLOG_FLOW_START.toString} directive to ${RiderConfig.zk.address} success.")
-      } else if (functionType == "routing") {
+      } else if(functionType == "hdfscsv"){
+        val base64Tuple = Seq(streamId, flowId, currentMillSec, sourceNs, "24", umsType,
+          base64byte2s(umsSchema.toString.trim.getBytes), sourceIncrementTopic,
+          if (flowOpt.nonEmpty) flowOpt.get.priorityId else 0L)
+        val directive = Await.result(directiveDal.insert(Directive(0, DIRECTIVE_HDFSCSV_FLOW_START.toString, streamId, flowId, "", RiderConfig.zk.address, currentSec, userId)), minTimeOut)
+        //        riderLogger.info(s"user ${directive.createBy} insert ${DIRECTIVE_HDFSLOG_FLOW_START.toString} success.")
+        val flow_start_ums =
+          s"""
+             |{
+             |"protocol": {
+             |"type": "${DIRECTIVE_HDFSCSV_FLOW_START.toString}"
+             |},
+             |"schema": {
+             |"namespace": "$sourceNs",
+             |"fields": [
+             |{
+             |"name": "directive_id",
+             |"type": "long",
+             |"nullable": false
+             |},
+             |{
+             |"name": "stream_id",
+             |"type": "long",
+             |"nullable": false
+             |},
+             |{
+             |"name": "flow_id",
+             |"type": "long",
+             |"nullable": false
+             |},
+             |{
+             |"name": "ums_ts_",
+             |"type": "datetime",
+             |"nullable": false
+             |},
+             |{
+             |"name": "namespace_rule",
+             |"type": "string",
+             |"nullable": false
+             |},
+             |{
+             |"name": "hour_duration",
+             |"type": "string",
+             |"nullable": false
+             |},
+             |{
+             |"name": "data_type",
+             |"type": "string",
+             |"nullable": false
+             |},
+             |{
+             |"name": "data_parse",
+             |"type": "string",
+             |"nullable": true
+             |},
+             |{
+             |"name": "source_increment_topic",
+             |"type": "string",
+             |"nullable": true
+             |},
+             |{
+             |"name": "priority_id",
+             |"type": "long",
+             |"nullable": true
+             |}
+             |]
+             |},
+             |"payload": [
+             |{
+             |"tuple": [${
+            directive.id
+          }, ${
+            base64Tuple.head
+          }, ${
+            base64Tuple(1)
+          }, "${
+            base64Tuple(2)
+          }", "${
+            base64Tuple(3)
+          }", "${
+            base64Tuple(4)
+          }", "${
+            base64Tuple(5)
+          }", "${
+            base64Tuple(6)
+          }", "${
+            base64Tuple(7)
+          }", "${
+            base64Tuple(8)
+          }"]
+             |}
+             |]
+             |}
+        """.stripMargin.replaceAll("\n", "").replaceAll("\r", "")
+        riderLogger.info(s"user ${
+          directive.createBy
+        } send flow $flowId start directive: $flow_start_ums")
+        PushDirective.sendHdfsCsvStartDirective(flowId, streamId, sourceNs, jsonCompact(flow_start_ums))
+      }else if (functionType == "routing") {
         val (instance, db, _) = namespaceDal.getNsDetail(sinkNs)
-        val tuple = Seq(streamId, flowId, currentMillSec, umsType, sinkNs, instance.connUrl, db.nsDatabase, sourceIncrementTopic)
+        val tuple = Seq(streamId, flowId, currentMillSec, umsType, sinkNs, instance.connUrl, db.nsDatabase, sourceIncrementTopic, if (flowOpt.nonEmpty) flowOpt.get.priorityId else 0L)
         val directive = Await.result(directiveDal.insert(Directive(0, DIRECTIVE_ROUTER_FLOW_START.toString, streamId, flowId, "", RiderConfig.zk.address, currentSec, userId)), minTimeOut)
         //        riderLogger.info(s"user ${directive.createBy} insert ${DIRECTIVE_HDFSLOG_FLOW_START.toString} success.")
         val flow_start_ums =
@@ -720,17 +840,22 @@ object FlowUtils extends RiderLogger {
              |        "name": "source_increment_topic",
              |        "type": "string",
              |        "nullable": false
+             |      },
+             |      {
+             |        "name": "priority_id",
+             |        "type": "long",
+             |        "nullable": true
              |      }
              |    ]
              |  },
              |  "payload": [
              |    {
-             |      "tuple": [${directive.id}, ${tuple.head}, ${tuple(1)}, "${tuple(2)}", "${tuple(3)}","${tuple(4)}", "${tuple(5)}", "${tuple(6)}","${tuple(7)}"]
+             |      "tuple": [${directive.id}, ${tuple.head}, ${tuple(1)}, "${tuple(2)}", "${tuple(3)}","${tuple(4)}", "${tuple(5)}", "${tuple(6)}","${tuple(7)}","${tuple(8)}"]
              |    }
              |  ]
              |}
              |
-        """.stripMargin.replaceAll("\n", "")
+        """.stripMargin.replaceAll("\n", "").replaceAll("\r", "")
         riderLogger.info(s"user ${
           directive.createBy
         } send flow $flowId start directive: $flow_start_ums")
@@ -765,6 +890,13 @@ object FlowUtils extends RiderLogger {
           directive.createBy
         } send flow $flowId stop directive")
         PushDirective.sendHdfsLogFlowStopDirective(flowId, streamId, sourceNs)
+      } else if (functionType == "hdfscsv") {
+        val tuple = Seq(streamId, currentMillSec, sourceNs).mkString(",")
+        val directive = Await.result(directiveDal.insert(Directive(0, DIRECTIVE_HDFSCSV_FLOW_STOP.toString, streamId, flowId, "", RiderConfig.zk.address, currentSec, userId)), minTimeOut)
+        riderLogger.info(s"user ${
+          directive.createBy
+        } send flow $flowId stop directive")
+        PushDirective.sendHdfsCsvFlowStopDirective(flowId, streamId, sourceNs)
       } else if (functionType == "routing") {
         val tuple = Seq(streamId, currentMillSec, sourceNs).mkString(",")
         val directive = Await.result(directiveDal.insert(Directive(0, DIRECTIVE_ROUTER_FLOW_STOP.toString, streamId, flowId, "", RiderConfig.zk.address, currentSec, userId)), minTimeOut)
@@ -785,14 +917,14 @@ object FlowUtils extends RiderLogger {
     try {
       val streamJoinNs = getStreamJoinNamespaces(tranConfig)
       val nsSeq = (streamJoinNs += sourceNs).map(ns => namespaceDal.getNamespaceByNs(ns).get)
-      val nsTopics= mutable.ArrayBuffer.empty[NsDatabase]
+      val nsTopics = mutable.ArrayBuffer.empty[NsDatabase]
       nsSeq.distinct.foreach(ns => {
         val topicSearch = Await.result(streamInTopicDal.findByFilter(rel => rel.streamId === streamId && rel.nsDatabaseId === ns.nsDatabaseId), minTimeOut)
         if (topicSearch.isEmpty) {
           val instance = Await.result(instanceDal.findByFilter(_.id === ns.nsInstanceId), minTimeOut).head
           val database = Await.result(databaseDal.findByFilter(_.id === ns.nsDatabaseId), minTimeOut).head
-          val latestKafkaOffset = getLatestOffset(instance.connUrl, database.nsDatabase, RiderConfig.kerberos.enabled)
-          val lastConsumedOffset = getConsumerOffset(instance.connUrl, streamName, database.nsDatabase, latestKafkaOffset.split(",").length, RiderConfig.kerberos.enabled)
+          val latestKafkaOffset = getLatestOffset(instance.connUrl, database.nsDatabase, RiderConfig.kerberos.kafkaEnabled)
+          val lastConsumedOffset = getConsumerOffset(instance.connUrl, streamName, database.nsDatabase, latestKafkaOffset.split(",").length, RiderConfig.kerberos.kafkaEnabled)
           val offset =
             if (lastConsumedOffset.split(",").exists(_.split(":").length == 1)) latestKafkaOffset
             else lastConsumedOffset
@@ -800,9 +932,9 @@ object FlowUtils extends RiderLogger {
             active = true, currentSec, userId, currentSec, userId)
           val inTopic = Await.result(streamInTopicDal.insert(inTopicInsert), minTimeOut)
           nsTopics += database
-          sendTopicDirective(streamId, Seq(PutTopicDirective(database.nsDatabase, inTopic.partitionOffsets, inTopic.rate, None)),None, userId, false)
-        }else{
-          topicSearch.foreach(ns =>{
+          sendTopicDirective(streamId, Seq(PutTopicDirective(database.nsDatabase, inTopic.partitionOffsets, inTopic.rate, None)), None, userId, false)
+        } else {
+          topicSearch.foreach(ns => {
             val database = Await.result(databaseDal.findByFilter(_.id === ns.nsDatabaseId), minTimeOut).head
             nsTopics += database
           })
@@ -1032,12 +1164,12 @@ object FlowUtils extends RiderLogger {
     nsSeq
   }
 
-  def startFlinkFlow(appId: String, flow: Flow) = {
+  def startFlinkFlow(appId: String, flow: Flow): Boolean = {
     try {
-      val commandSh = generateFlinkFlowStartSh(appId, flow)
+      val logPath = getLogPath(getFlowName(flow.id, flow.sourceNs, flow.sinkNs))
+      val commandSh = generateFlinkFlowStartSh(appId, flow, logPath)
       riderLogger.info(s"start flow ${flow.id} command: $commandSh")
-      runShellCommand(commandSh)
-      true
+      ShellUtils.runShellCommand(commandSh, logPath)._1
     } catch {
       case ex: Exception =>
         riderLogger.error(s"flow ${flow.id} start failed", ex)
@@ -1045,15 +1177,13 @@ object FlowUtils extends RiderLogger {
     }
   }
 
-  def generateFlinkFlowStartSh(appId: String, flow: Flow): String = {
+  def generateFlinkFlowStartSh(appId: String, flow: Flow, logPath: String): String = {
     val config1 = getWhFlinkConfig(flow)
     val config2 = getFlinkFlowConfig(flow)
-    val logPath = getLogPath(getFlowName(flow.id, flow.sourceNs, flow.sinkNs))
     flowDal.updateLogPath(flow.id, logPath)
     s"""
-       |ssh -p${RiderConfig.spark.sshPort} ${RiderConfig.spark.user}@${RiderConfig.riderServer.host}
        |${RiderConfig.flink.homePath}/bin/flink run
-       |-yid $appId -yqu ${RiderConfig.flink.yarnQueueName} ${RiderConfig.flink.jarPath} '${config1}' '${config2}'
+       |-d -yid $appId -yqu ${RiderConfig.flink.yarnQueueName} ${RiderConfig.flink.jarPath} '''${config1}''' '''${config2}'''
        |> $logPath 2>&1
      """.stripMargin.replaceAll("\n", " ").trim
   }
@@ -1066,7 +1196,17 @@ object FlowUtils extends RiderLogger {
     val userDefinedTopics = flowUdfTopicDal.getUdfTopics(Seq(flow.id)).map(topic => KafkaFlinkTopic(topic.topicName, topic.partitionOffsets))
     val flinkTopic = autoRegisteredTopics ++ userDefinedTopics
     val udfConfig: Seq[FlowUdfResponse] = flowUdfDal.getFlowUdf(Seq(flow.id))
-    val config = WhFlinkConfig(getFlowName(flow.id, flow.sourceNs, flow.sinkNs), KafkaInput(baseConfig, flinkTopic), outputConfig, flow.parallelism.getOrElse(RiderConfig.flink.defaultParallelism), RiderConfig.zk.address, udfConfig, RiderConfig.flink.feedbackEnabled, RiderConfig.flink.feedbackStateCount, RiderConfig.flink.feedbackInterval, FlinkConfig(RiderConfig.flinkCheckpoint), RiderConfig.kerberos.enabled)
+    val config = WhFlinkConfig(getFlowName(flow.id, flow.sourceNs, flow.sinkNs),
+      KafkaInput(baseConfig, flinkTopic),
+      outputConfig,
+      flow.parallelism.getOrElse(RiderConfig.flink.defaultParallelism),
+      RiderConfig.zk.address,
+      udfConfig,
+      RiderConfig.flink.feedbackEnabled,
+      RiderConfig.flink.feedbackStateCount,
+      RiderConfig.flink.feedbackInterval,
+      FlinkConfig(RiderConfig.flinkCheckpoint),
+      RiderConfig.kerberos.kafkaEnabled)
     caseClass2json[WhFlinkConfig](config)
   }
 
@@ -1243,7 +1383,7 @@ object FlowUtils extends RiderLogger {
   private def getFlowByFlowStream(flowStream: FlowStream): Flow
 
   = {
-    Flow(flowStream.id, flowStream.flowName, flowStream.projectId, flowStream.streamId, flowStream.sourceNs, flowStream.sinkNs, flowStream.parallelism, flowStream.consumedProtocol,
+    Flow(flowStream.id, flowStream.flowName, flowStream.projectId, flowStream.streamId, 0L, flowStream.sourceNs, flowStream.sinkNs, flowStream.parallelism, flowStream.consumedProtocol,
       flowStream.sinkConfig, flowStream.tranConfig, flowStream.tableKeys, flowStream.desc, flowStream.status, flowStream.startedTime, flowStream.stoppedTime,
       flowStream.logPath, flowStream.active, flowStream.createTime, flowStream.createBy, flowStream.updateTime,
       flowStream.updateBy)
@@ -1264,6 +1404,8 @@ object FlowUtils extends RiderLogger {
               else flowStream.status
             val yarnFlow = if (!flowYarnMap.contains(flowName) && FlowStatus.withName(logStatus) == FlowStatus.STOPPING) {
               FlinkFlowStatus(FlowStatus.STOPPED.toString, flowStream.startedTime, flowStream.stoppedTime)
+            } else if (!flowYarnMap.contains(flowName) && FlowStatus.withName(logStatus) == FlowStatus.RUNNING) {
+              FlinkFlowStatus(FlowStatus.FAILED.toString, flowStream.startedTime, flowStream.stoppedTime)
             } else if (flowYarnMap.contains(flowName) && flowStream.startedTime.orNull != null && yyyyMMddHHmmss(flowYarnMap(flowName).startTime) > yyyyMMddHHmmss(flowStream.startedTime.get)) {
               getFlowStatusByYarnAndLog(FlinkFlowStatus(logStatus, flowStream.startedTime, flowStream.stoppedTime), flowYarnMap(flowName))
             } else FlinkFlowStatus(logStatus, flowStream.startedTime, flowStream.stoppedTime)
@@ -1284,20 +1426,26 @@ object FlowUtils extends RiderLogger {
   private def getFlowStatusByYarnAndLog(dbInfo: FlinkFlowStatus, yarnInfo: FlinkJobStatus): FlinkFlowStatus
 
   = {
-    YarnAppStatus.withName(yarnInfo.state) match {
-      case YarnAppStatus.ACCEPTED =>
-        FlinkFlowStatus(FlowStatus.STARTING.toString, dbInfo.startTime, dbInfo.stopTime)
-      case YarnAppStatus.RUNNING =>
-        FlinkFlowStatus(FlowStatus.RUNNING.toString, dbInfo.startTime, dbInfo.stopTime)
-      case YarnAppStatus.CANCELED | YarnAppStatus.KILLED | YarnAppStatus.FINISHED | YarnAppStatus.FAILED =>
-        if (FlowStatus.withName(dbInfo.status) == FlowStatus.RUNNING || FlowStatus.withName(dbInfo.status) == FlowStatus.STARTING) {
-          FlinkFlowStatus(FlowStatus.FAILED.toString, dbInfo.startTime, Option(yarnInfo.stopTime))
-        } else if (FlowStatus.withName(dbInfo.status) == FlowStatus.STOPPING) {
-          FlinkFlowStatus(FlowStatus.STOPPED.toString, dbInfo.startTime, Option(yarnInfo.stopTime))
-        } else {
-          dbInfo
-        }
-      case _ => dbInfo
+    try {
+      YarnAppStatus.withName(yarnInfo.state) match {
+        case YarnAppStatus.ACCEPTED =>
+          FlinkFlowStatus(FlowStatus.STARTING.toString, dbInfo.startTime, dbInfo.stopTime)
+        case YarnAppStatus.RUNNING =>
+          FlinkFlowStatus(FlowStatus.RUNNING.toString, dbInfo.startTime, dbInfo.stopTime)
+        case YarnAppStatus.CANCELED | YarnAppStatus.KILLED | YarnAppStatus.FINISHED | YarnAppStatus.FAILED =>
+          if (FlowStatus.withName(dbInfo.status) == FlowStatus.RUNNING || FlowStatus.withName(dbInfo.status) == FlowStatus.STARTING) {
+            FlinkFlowStatus(FlowStatus.FAILED.toString, dbInfo.startTime, Option(yarnInfo.stopTime))
+          } else if (FlowStatus.withName(dbInfo.status) == FlowStatus.STOPPING) {
+            FlinkFlowStatus(FlowStatus.STOPPED.toString, dbInfo.startTime, Option(yarnInfo.stopTime))
+          } else {
+            dbInfo
+          }
+        case _ => dbInfo
+      }
+    } catch {
+      case ex: Exception =>
+        riderLogger.warn(s"getFlowStatusByYarnAndLog error, task name is ${yarnInfo.name}, job id is ${yarnInfo.jobId}, yarn state is ${yarnInfo.state}, $ex")
+        dbInfo
     }
   }
 
@@ -1305,43 +1453,45 @@ object FlowUtils extends RiderLogger {
 
   def getFlowStatusByLog(flowName: String, logPath: String, preStatus: String): String = {
     val failedPattern = "The program finished with the following exception".r
+    val fatalErrorPattern = "Fatal error while running command line interface".r
+    val noJarFoundPattern="Could not build the program from JAR file".r
     try {
       val fileLines = YarnClientLog.getLogByAppName(flowName, logPath)
-      if (failedPattern.findFirstIn(fileLines).nonEmpty)
+      if (failedPattern.findFirstIn(fileLines).nonEmpty||fatalErrorPattern.findFirstIn(fileLines).nonEmpty||noJarFoundPattern.findFirstIn(fileLines).nonEmpty)
         FlowStatus.FAILED.toString
       else preStatus
     }
     catch {
       case ex: Exception =>
-        riderLogger.warn(s"Refresh flow $flowName status from client log failed", ex)
+        riderLogger.warn(s"Refresh flow $flowName status from client log failed, $ex")
         preStatus
     }
   }
 
-  def updateStatusByStreamStop(streamId: Long, streamType: String, streamStatus: String): Int = {
+  def updateStatusByStreamStop(streamId: Long, streamType: String, streamStatus: String, userId: Long): Int = {
     val flows = Await.result(flowDal.findByFilter(_.streamId === streamId), minTimeOut)
     StreamType.withName(streamType) match {
       case StreamType.SPARK =>
         val flowIds = flows.filter(flow =>
           flow.status == FlowStatus.RUNNING.toString || flow.status == FlowStatus.STARTING.toString || flow.status == FlowStatus.UPDATING.toString)
           .map(_.id)
-        Await.result(flowDal.updateStatusByStreamStop(flowIds, FlowStatus.SUSPENDING.toString), minTimeOut)
+        Await.result(flowDal.updateStatusByStreamStop(flowIds, FlowStatus.SUSPENDING.toString, userId), minTimeOut)
       case StreamType.FLINK =>
         if (streamStatus == StreamStatus.STOPPING.toString) {
           val flowIds = flows.filter(flow =>
             flow.status == FlowStatus.RUNNING.toString || flow.status == FlowStatus.STARTING.toString)
             .map(_.id)
-          Await.result(flowDal.updateStatusByStreamStop(flowIds, FlowStatus.STOPPING.toString), minTimeOut)
+          Await.result(flowDal.updateStatusByStreamStop(flowIds, FlowStatus.STOPPING.toString, userId), minTimeOut)
         } else if (streamStatus == StreamStatus.STOPPED.toString) {
           val flowIds = flows.filter(flow =>
             flow.status == FlowStatus.RUNNING.toString || flow.status == FlowStatus.STARTING.toString || flow.status == FlowStatus.STOPPING.toString)
             .map(_.id)
-          Await.result(flowDal.updateStatusByStreamStop(flowIds, FlowStatus.STOPPED.toString), minTimeOut)
+          Await.result(flowDal.updateStatusByStreamStop(flowIds, FlowStatus.STOPPED.toString, userId), minTimeOut)
         } else {
           val flowIds = flows.filter(flow =>
             flow.status == FlowStatus.RUNNING.toString || flow.status == FlowStatus.STARTING.toString || flow.status == FlowStatus.STOPPING.toString)
             .map(_.id)
-          Await.result(flowDal.updateStatusByStreamStop(flowIds, FlowStatus.FAILED.toString), minTimeOut)
+          Await.result(flowDal.updateStatusByStreamStop(flowIds, FlowStatus.FAILED.toString, userId), minTimeOut)
         }
     }
   }
@@ -1370,11 +1520,11 @@ object FlowUtils extends RiderLogger {
 
   def genFlowAllOffsets(topics: Seq[FlowTopicTemp], kafkaMap: Map[Long, String]): Seq[TopicAllOffsets] = {
     topics.map(topic => {
-      val earliest = getEarliestOffset(kafkaMap(topic.flowId), topic.topicName, RiderConfig.kerberos.enabled)
-      val latest = getLatestOffset(kafkaMap(topic.flowId), topic.topicName, RiderConfig.kerberos.enabled)
+      val earliest = getEarliestOffset(kafkaMap(topic.flowId), topic.topicName, RiderConfig.kerberos.kafkaEnabled)
+      val latest = getLatestOffset(kafkaMap(topic.flowId), topic.topicName, RiderConfig.kerberos.kafkaEnabled)
       val flow = Await.result(flowDal.findById(topic.flowId), minTimeOut).get
       val flowName = FlowUtils.getFlowName(flow.id, flow.sourceNs, flow.sinkNs)
-      val consumedLatestOffset = getConsumerOffset(kafkaMap(topic.flowId), flowName, topic.topicName, latest.split(",").length, RiderConfig.kerberos.enabled)
+      val consumedLatestOffset = getConsumerOffset(kafkaMap(topic.flowId), flowName, topic.topicName, latest.split(",").length, RiderConfig.kerberos.kafkaEnabled)
       TopicAllOffsets(topic.id, topic.topicName, topic.rate, consumedLatestOffset, earliest, latest)
     })
   }
@@ -1445,8 +1595,10 @@ object FlowUtils extends RiderLogger {
         .filter(_.name == db.nsDatabase).head.consumedLatestOffset
       val driftStreamOffset = streamDal.getStreamTopicsMap(driftStream.id, driftStream.name).autoRegisteredTopics
         .filter(_.name == db.nsDatabase).head.consumedLatestOffset
-      val offset = if (preStreamOffset < driftStreamOffset) preStreamOffset
-      else driftStreamOffset
+      //      val offset = if (preStreamOffset < driftStreamOffset) preStreamOffset
+      //      else driftStreamOffset
+      val activeTopicOffset = getEarliestOffset(nsDetail._1.connUrl, db.nsDatabase, RiderConfig.kerberos.kafkaEnabled)
+      val offset = getMinStreamOffsets(activeTopicOffset, preStreamOffset, driftStreamOffset).toString
       (offset,
         s"it's available to drift, ${preFlowStream.streamName} stream consumed topic ${db.nsDatabase} offset is $preStreamOffset, ${driftStream.name} stream consumed offset is $driftStreamOffset, ${driftStream.name} stream ${db.nsDatabase} offset will be update to $offset. The final offset depends on the actual operation time!!!")
     } else {
@@ -1454,6 +1606,24 @@ object FlowUtils extends RiderLogger {
         .filter(_.name == db.nsDatabase).head.consumedLatestOffset
       (offset, s"it's available to drift, ${driftStream.name} stream will add new topic ${db.nsDatabase} with $offset offset. The final offset depends on the actual operation time!!!")
     }
+  }
+
+  def getMinStreamOffsets(topicBeginOffset: String, streamOffset: String, driftStreamOffset: String) = {
+    if (streamOffset.contains(",")) {
+      val streamOffsetSeq = streamOffset.split(",").seq
+      val driftStreamOffsetSeq = driftStreamOffset.split(",").seq
+      val topicBeginOffsetSeq = topicBeginOffset.split(",").seq
+      for (i <- 0 until streamOffsetSeq.size) {
+        getMinStreamOffset(topicBeginOffsetSeq(i), streamOffsetSeq(i), driftStreamOffsetSeq(i))
+      }.mkString(",")
+    } else getMinStreamOffset(topicBeginOffset, streamOffset, driftStreamOffset)
+  }
+
+  def getMinStreamOffset(topicBeginOffset: String, streamOffset: String, driftStreamOffset: String) = {
+    if (topicBeginOffset < streamOffset && topicBeginOffset < driftStreamOffset) {
+      if (streamOffset < driftStreamOffset) streamOffset
+      else driftStreamOffset
+    } else topicBeginOffset
   }
 
   def topicOffsetDrift(streamId: Long, db: NsDatabase, offset: String, rate: Int, userId: Long): Unit = {

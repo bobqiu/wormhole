@@ -33,10 +33,10 @@ import edp.wormhole.util.DateUtils
 import scala.language.existentials
 import scala.math.{BigDecimal, Ordering}
 
-class PatternAggregation(input: Seq[Iterable[Row]], fieldName: String, schemaMap: Map[String, (TypeInformation[_], Int)]) {
+class PatternAggregation(input: Iterable[Iterable[Row]], fieldName: String, schemaMap: Map[String, (TypeInformation[_], Int)]) {
   private lazy val (fieldType, fieldIndex) = schemaMap(fieldName)
 
-  def aggregationMatch(functionType: String) = {
+  def aggregationFunction(functionType: String) = {
     Functions.functions(functionType) match {
       case AVG => avg()
       case SUM => sum()
@@ -146,7 +146,7 @@ class PatternAggregation(input: Seq[Iterable[Row]], fieldName: String, schemaMap
   private def sumDecimal() = {
     var sum = new java.math.BigDecimal(0.0)
     for (elem <- input.flatten) {
-      val value: java.math.BigDecimal = new java.math.BigDecimal(elem.asInstanceOf[String].trim).stripTrailingZeros()
+      val value: java.math.BigDecimal = new java.math.BigDecimal(new java.math.BigDecimal(elem.asInstanceOf[String].trim).stripTrailingZeros().toPlainString)
       if (value == null) sum
       else sum = sum.add(value)
     }

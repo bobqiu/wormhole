@@ -129,8 +129,15 @@ export class Workbench extends React.Component {
       transConnectClass: 'hide',
       flowTransNsData: [],
       hasPattern: true,
-      outputType: 'agg',
-
+      outputType: 'detail',
+      outputFieldList: [
+        // {
+        //   function_type: 'max',
+        //   field_name: '1',
+        //   alias_name: '1',
+        //   _id: 0
+        // }
+      ],
       step2SinkNamespace: '',
       step2SourceNamespace: '',
 
@@ -181,7 +188,7 @@ export class Workbench extends React.Component {
       singleFlowResult: {},
       streamDiffType: 'default',
       pipelineStreamId: 0,
-      hdfslogSinkNsValue: '',
+      hdfsSinkNsValue: '',
       routingSinkNsValue: '',
       flowSourceResult: [],
 
@@ -320,7 +327,7 @@ export class Workbench extends React.Component {
 
   initialHdfslogCascader = (value, selectedOptions) => {
     this.setState({
-      hdfslogSinkNsValue: value.join('.'),
+      hdfsSinkNsValue: value.join('.'),
       flowSourceNsSys: selectedOptions[selectedOptions.length - 1].nsSys
     })
   }
@@ -344,11 +351,10 @@ export class Workbench extends React.Component {
     this.setState({jobSourceNsSys})
     if (this.state.jobDiffType === 'backfill') {
       this.setState({ backfillSinkNsValue: value.join('.'), jobSourceNsSys })
-    } else if (this.state.jobDiffType === 'default') {
-      this.setState({singleJobResult: {
-        sourceNs: `${jobSourceNsSys}.${value.join('.')}`
-      }})
     }
+    this.setState({singleJobResult: {
+      sourceNs: `${jobSourceNsSys}.${value.join('.')}`
+    }})
   }
   initialSourceNsVersion = () => {
     const { singleJobResult, sourceNsVersionList } = this.state
@@ -449,7 +455,7 @@ export class Workbench extends React.Component {
       etpStrategyConfirmValue: '',
       etpStrategyRequestValue: {},
       cepPropData: {},
-      outputType: 'agg',
+      outputType: 'detail',
       transformMode: '',
       flowSubPanelKey: 'spark'
     }, () => {
@@ -491,7 +497,7 @@ export class Workbench extends React.Component {
 
       this.setState({
         selectStreamKafkaTopicValue: resultFinal,
-        hdfslogSinkNsValue: ''
+        hdfsSinkNsValue: ''
       })
       if (result.length === 0) {
         message.warning(locale === 'en' ? 'Please create a Stream with corresponding type first!' : '请先新建相应类型的 Stream！', 3)
@@ -516,7 +522,7 @@ export class Workbench extends React.Component {
     })
     this.workbenchFlowForm.setFieldsValue({
       sourceDataSystem: '',
-      hdfslogNamespace: undefined
+      hdfsNamespace: undefined
     })
   }
 
@@ -542,13 +548,14 @@ export class Workbench extends React.Component {
         })
         break
       case 'hdfslog':
+      case 'hdfscsv':
         this.setState({
-          hdfslogSinkNsValue: ''
+          hdfsSinkNsValue: ''
         })
         this.workbenchFlowForm.setFieldsValue({
           flowStreamId: Number(id),
           sourceDataSystem: '',
-          hdfslogNamespace: undefined
+          hdfsNamespace: undefined
         })
         break
       case 'routing':
@@ -809,6 +816,7 @@ export class Workbench extends React.Component {
             this.queryFlowDefault(flow)
             break
           case 'hdfslog':
+          case 'hdfscsv':
             this.queryFlowHdfslog(flow)
             break
           case 'routing':
@@ -1152,7 +1160,7 @@ export class Workbench extends React.Component {
         this.setState({
           formStep: 0,
           pipelineStreamId: result.streamId,
-          hdfslogSinkNsValue: this.state.flowMode === 'copy' ? '' : resultSinkNsFinal,
+          hdfsSinkNsValue: this.state.flowMode === 'copy' ? '' : resultSinkNsFinal,
           flowKafkaInstanceValue: result.kafka,
           flowKafkaTopicValue: result.topics,
           singleFlowResult: {
@@ -1178,7 +1186,7 @@ export class Workbench extends React.Component {
 
         this.workbenchFlowForm.setFieldsValue({
           sourceDataSystem: sourceNsArr[0],
-          hdfslogNamespace: [
+          hdfsNamespace: [
             sourceNsArr[1],
             sourceNsArr[2],
             sourceNsArr[3]
@@ -1279,7 +1287,7 @@ export class Workbench extends React.Component {
           etpStrategyConfirmValue: '',
           etpStrategyRequestValue: {},
           cepPropData: {},
-          outputType: 'agg',
+          outputType: 'detail',
           transformMode: '',
           flowSubPanelKey: value
         }, () => {
@@ -1376,7 +1384,6 @@ export class Workbench extends React.Component {
         currentUdf: currentUdf,
         usingUdf: usingUdf
       })
-
       const { name, streamType, functionType, desc, instance, JVMDriverConfig, JVMExecutorConfig, othersConfig, startConfig, launchConfig, id, projectId } = resultVal
       this.workbenchStreamForm.setFieldsValue({
         streamType,
@@ -1649,7 +1656,7 @@ export class Workbench extends React.Component {
       case 'flow':
         if (streamDiffType === 'default') {
           this.handleForwardDefault()
-        } else if (streamDiffType === 'hdfslog' || streamDiffType === 'routing') {
+        } else if (streamDiffType === 'hdfslog' || streamDiffType === 'hdfscsv' || streamDiffType === 'routing') {
           this.handleForwardHdfslogOrRouting()
         }
         break
@@ -1798,11 +1805,11 @@ export class Workbench extends React.Component {
       if (!err) {
         if (flowMode === 'add' || flowMode === 'copy') {
           // 新增flow时验证source to sink 是否存在
-          const sourceInfo = streamDiffType === 'hdfslog'
-            ? [flowSourceNsSys, values.hdfslogNamespace[0], values.hdfslogNamespace[1], values.hdfslogNamespace[2], '*', '*', '*'].join('.')
+          const sourceInfo = streamDiffType === 'hdfslog' || streamDiffType === 'hdfscsv'
+            ? [flowSourceNsSys, values.hdfsNamespace[0], values.hdfsNamespace[1], values.hdfsNamespace[2], '*', '*', '*'].join('.')
             : [flowSourceNsSys, values.routingNamespace[0], values.routingNamespace[1], values.routingNamespace[2], '*', '*', '*'].join('.')
 
-          const sinkInfo = streamDiffType === 'hdfslog'
+          const sinkInfo = streamDiffType === 'hdfslog' || streamDiffType === 'hdfscsv'
             ? sourceInfo
             : ['kafka', values.routingSinkNs[0], values.routingSinkNs[1], values.routingSinkNs[2], '*', '*', '*'].join('.')
 
@@ -2098,6 +2105,7 @@ export class Workbench extends React.Component {
         this.handleSubmitFlowDefault()
         break
       case 'hdfslog':
+      case 'hdfscsv':
         this.handleSubmitFlowHdfslog()
         break
       case 'routing':
@@ -2203,7 +2211,7 @@ export class Workbench extends React.Component {
     this.workbenchFlowForm.validateFieldsAndScroll((err, values) => {
       if (!err) {
         if (flowMode === 'add' || flowMode === 'copy') {
-          const sourceDataInfo = [flowSourceNsSys, values.hdfslogNamespace[0], values.hdfslogNamespace[1], values.hdfslogNamespace[2], '*', '*', '*'].join('.')
+          const sourceDataInfo = [flowSourceNsSys, values.hdfsNamespace[0], values.hdfsNamespace[1], values.hdfsNamespace[2], '*', '*', '*'].join('.')
           // const parallelism = flowSubPanelKey === 'spark' ? null : flowSubPanelKey === 'flink' ? values.parallelism : null
 
           const submitFlowData = {
@@ -2385,8 +2393,8 @@ export class Workbench extends React.Component {
   loadTransNs () {
     const { projectId, pipelineStreamId } = this.state
     const flowValues = this.workbenchFlowForm.getFieldsValue()
-    const { sourceDataSystem, sourceNamespace } = flowValues
-    this.props.onLoadSourceSinkTypeNamespace(projectId, pipelineStreamId, sourceDataSystem, 'sourceType', (result) => {
+    const { sourceNamespace } = flowValues
+    this.props.onLoadSourceSinkTypeNamespace(projectId, pipelineStreamId, 'kafka', 'instanceType', (result) => {
       const resultFinal = result.filter((i) => {
         const temp = [i.nsInstance, i.nsDatabase, i.nsTable]
         if (temp.join(',') !== sourceNamespace.join(',')) {
@@ -2493,14 +2501,21 @@ export class Workbench extends React.Component {
         transformValue: record.transformType
       }, () => {
         let cepFormData = typeof record.tranConfigInfoSql === 'string' && JSON.parse(record.tranConfigInfoSql.split(';')[0])
-        let outputText = ''
+        let outputFieldList = this.state.outputFieldList
         if (cepFormData.output) {
           if (cepFormData.output.type === 'agg' || cepFormData.output.type === 'filteredRow') {
-            outputText = cepFormData.output && cepFormData.output.field_list
+            outputFieldList = cepFormData.output && cepFormData.output.field_list
+            outputFieldList.forEach((v, i) => {
+              if (!v._id) {
+                v._id = Date.now() - i
+              }
+            })
           }
         }
+        const outputType = cepFormData.output && cepFormData.output.type
         this.setState({
-          outputType: cepFormData.output && cepFormData.output.type,
+          outputType,
+          outputFieldList,
           transformModalVisible: true
         }, () => {
           this.flowTransformForm.setFieldsValue({
@@ -2508,7 +2523,6 @@ export class Workbench extends React.Component {
             strategy: cepFormData.strategy,
             keyBy: cepFormData.key_by_fields,
             output: cepFormData.output && cepFormData.output.type,
-            outputText,
             editTransformId: record.order,
             transformation: record.transformType
           })
@@ -2578,23 +2592,6 @@ export class Workbench extends React.Component {
           case 'transformClassName':
             this.flowTransformForm.setFieldsValue({ transformClassName: record.transformConfigInfo })
             break
-          // case 'cep':
-          //   let cepFormData = record.tranConfigInfoSql && JSON.parse(record.tranConfigInfoSql)
-          //   let outputText = ''
-          //   if (cepFormData.output) {
-          //     if (cepFormData.output.type === 'agg' || cepFormData.output.type === 'filteredRow') {
-          //       outputText = cepFormData.output && cepFormData.output.field_list
-          //     }
-          //   }
-          //   this.setState({cepPropData: this.state.flowFormTranTableSource[record.order - 1]})
-          //   this.flowTransformForm.setFieldsValue({
-          //     windowTime: cepFormData.max_interval_seconds || '',
-          //     strategy: cepFormData.strategy,
-          //     keyBy: cepFormData.key_by_fields,
-          //     output: cepFormData.output && cepFormData.output.type,
-          //     outputText
-          //   })
-          //   break
         }
       })
     }
@@ -2626,7 +2623,7 @@ export class Workbench extends React.Component {
     this.setState({
       transformMode: 'add',
       transformValue: '',
-      outputType: 'agg',
+      outputType: 'detail',
       cepPropData: {}
     }, () => {
       this.setState({transformModalVisible: true}, () => {
@@ -2809,7 +2806,7 @@ export class Workbench extends React.Component {
    */
   onTransformModalOk = () => {
     const { transformMode, transformSinkNamespaceArray, flowPatternCepDataSource } = this.state
-    this.flowTransformForm.validateFieldsAndScroll((err, values) => {
+    this.flowTransformForm.validateFieldsAndScroll({force: true}, (err, values) => {
       if (!err) {
         let transformConfigInfoString = ''
         let tranConfigInfoSqlString = ''
@@ -2948,7 +2945,35 @@ export class Workbench extends React.Component {
             break
           case 'cep':
             let windowTime = values.windowTime == null ? -1 : values.windowTime
-            let outputText = values.outputText == null ? '' : `${values.outputText}`
+            let outputFieldList = []
+            if (values.output === 'agg') {
+              const rowKeysMap = {}
+              Object.keys(values).forEach(v => {
+                if (!v.includes('outputAggSelect') && !v.includes('outputAggFieldName') && !v.includes('outputAggRename')) return
+                const flag = v.split('_')[1]
+                if (!rowKeysMap[flag]) {
+                  rowKeysMap[flag] = {}
+                }
+                if (v.includes('outputAggSelect')) {
+                  rowKeysMap[flag].function_type = values[v]
+                }
+                if (v.includes('outputAggFieldName')) {
+                  rowKeysMap[flag].field_name = values[v]
+                }
+                if (v.includes('outputAggRename')) {
+                  rowKeysMap[flag].alias_name = values[v]
+                }
+              })
+              Object.keys(rowKeysMap).forEach(v => {
+                outputFieldList.push(rowKeysMap[v])
+              })
+            } else if (values.output === 'filteredRow') {
+              let obj = {
+                function_type: values[`outputFilteredRowSelect`],
+                field_name: values[`outputFilteredRowSelectFieldName`] || ''
+              }
+              outputFieldList.push(obj)
+            }
             if (flowPatternCepDataSource && flowPatternCepDataSource.length === 0) {
               this.setState({hasPattern: false})
               return
@@ -2962,7 +2987,7 @@ export class Workbench extends React.Component {
               max_interval_seconds: windowTime,
               output: {
                 type: values.output,
-                field_list: outputText
+                field_list: outputFieldList
               },
               strategy: values.strategy,
               pattern_seq: partterSeq
@@ -3562,7 +3587,8 @@ export class Workbench extends React.Component {
       flowFormTranTableSource, jobFormTranTableSource, namespaceClassHide, userClassHide,
       udfClassHide, flowSpecialConfigModalVisible, transformModalVisible, sinkConfigModalVisible,
       etpStrategyModalVisible, streamConfigModalVisible, sparkConfigModalVisible,
-      jobSinkConfigModalVisible, jobTransModalVisible, jobSpecialConfigModalVisible, pipelineStreamId, cepPropData, transformMode, hasPattern, outputType
+      jobSinkConfigModalVisible, jobTransModalVisible, jobSpecialConfigModalVisible, pipelineStreamId, cepPropData, transformMode, hasPattern,
+      outputType, outputFieldList
     } = this.state
     const { streams, projectNamespaces, streamSubmitLoading, locale } = this.props
 
@@ -3659,7 +3685,7 @@ export class Workbench extends React.Component {
 
                       transformTableRequestValue={this.state.transformTableRequestValue}
                       streamDiffType={this.state.streamDiffType}
-                      hdfslogSinkNsValue={this.state.hdfslogSinkNsValue}
+                      hdfsSinkNsValue={this.state.hdfsSinkNsValue}
                       routingSourceNsValue={this.state.routingSourceNsValue}
                       routingSinkNsValue={this.state.routingSinkNsValue}
                       initialDefaultCascader={this.initialDefaultCascader}
@@ -3705,6 +3731,7 @@ export class Workbench extends React.Component {
                         transformMode={transformMode}
                         hasPattern={hasPattern}
                         outputType={outputType}
+                        outputFieldList={outputFieldList}
                     />
                     </Modal>
                     {/* Flow Sink Config Modal */}

@@ -33,6 +33,7 @@ import edp.rider.rest.util.CommonUtils._
 import edp.wormhole.ums.UmsProtocolType._
 import edp.wormhole.ums._
 import edp.wormhole.util.{DateUtils, DtFormat}
+import org.joda.time.DateTime
 
 import scala.concurrent.Await
 
@@ -109,10 +110,10 @@ object FeedbackProcess extends RiderLogger {
   def doFeedbackError(records: List[Ums]): Unit = {
     try {
       val insertSeq = records.flatMap(record => {
-//        val protocolType = record.protocol.`type`.toString
+        //        val protocolType = record.protocol.`type`.toString
         val srcNamespace: String = record.schema.namespace.toLowerCase
         val fields = record.schema.fields_get
-//        val curTs = currentMillSec
+        //        val curTs = currentMillSec
         record.payload_get.map(tuple => {
           val streamIdValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "stream_id")
           val flowIdValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "flow_id")
@@ -131,56 +132,61 @@ object FeedbackProcess extends RiderLogger {
             else ""
           val topics =
             if (UmsFieldType.umsFieldValue(tuple.tuple, fields, "topics") != null)
-              UmsFieldType.umsFieldValue(tuple.tuple, fields, "topics").toString
-            else null
+              Some(UmsFieldType.umsFieldValue(tuple.tuple, fields, "topics").toString)
+            else None
           val feedbackTimeValue =
             if (UmsFieldType.umsFieldValue(tuple.tuple, fields, "ums_ts_") != null)
-               UmsFieldType.umsFieldValue(tuple.tuple, fields, "ums_ts_")
+              DateUtils.dt2string(UmsFieldType.umsFieldValue(tuple.tuple, fields, "ums_ts_").asInstanceOf[DateTime],DtFormat.TS_DASH_SEC)
             else DateUtils.currentyyyyMMddHHmmss
-          val errorPatternValue=
-            if(UmsFieldType.umsFieldValue(tuple.tuple, fields, "error_pattern")!=null)
+          val errorPatternValue =
+            if (UmsFieldType.umsFieldValue(tuple.tuple, fields, "error_pattern") != null)
               UmsFieldType.umsFieldValue(tuple.tuple, fields, "error_pattern")
             else ""
-/*          FeedbackFlowErr(1, protocolType.toString, umsTsValue.toString, streamIdValue.toString.toLong,
-            srcNamespace, sinkNamespaceValue.toString, errorCountValue.toString.toInt,
-            errMaxWaterMarkTsValue.toString, errMinWaterMarkTsValue.toString,
-            errorInfoValue, topics, curTs)*/
-          FeedbackErr(1,CacheMap.getProjectIdByStreamId(streamIdValue.toString.toLong).getOrElse(0L),"1",streamIdValue.toString.toLong,flowIdValue.toString.toLong,srcNamespace,sinkNamespaceValue.toString,dataTypeValue.toString,errorPatternValue.toString,topics,errorCountValue.toString.toInt,
-            if(errMaxWaterMarkTsValue==null)DateUtils.currentyyyyMMddHHmmss.toString else errMaxWaterMarkTsValue.toString,  if(errMaxWaterMarkTsValue==null)DateUtils.currentyyyyMMddHHmmss.toString else errMinWaterMarkTsValue.toString,errorInfoValue,dataInfoValue,feedbackTimeValue.toString,DateUtils.currentyyyyMMddHHmmss.toString)
+          /*          FeedbackFlowErr(1, protocolType.toString, umsTsValue.toString, streamIdValue.toString.toLong,
+                      srcNamespace, sinkNamespaceValue.toString, errorCountValue.toString.toInt,
+                      errMaxWaterMarkTsValue.toString, errMinWaterMarkTsValue.toString,
+                      errorInfoValue, topics, curTs)*/
+          FeedbackErr(1, CacheMap.getProjectIdByStreamId(streamIdValue.toString.toLong).getOrElse(0L), "1",
+            streamIdValue.toString.toLong, flowIdValue.toString.toLong, srcNamespace, sinkNamespaceValue.toString,
+            dataTypeValue.toString, errorPatternValue.toString, topics, errorCountValue.toString.toInt,
+            if (errMaxWaterMarkTsValue == null) DateUtils.currentyyyyMMddHHmmss.toString
+            else errMaxWaterMarkTsValue.toString, if (errMaxWaterMarkTsValue == null)
+              DateUtils.currentyyyyMMddHHmmss.toString else errMinWaterMarkTsValue.toString,
+            errorInfoValue, dataInfoValue, feedbackTimeValue, DateUtils.currentyyyyMMddHHmmss.toString)
         })
       })
-      riderLogger.info(s"insert error list:$insertSeq")
       Await.result(modules.feedbackErrDal.insert(insertSeq), minTimeOut)
     } catch {
       case ex: Exception =>
-        riderLogger.error(s"process $FEEDBACK_SPARKX_FLOW_ERROR message $records failed", ex)
+        riderLogger.error(s"process $FEEDBACK_FLOW_ERROR message failed", ex)
+        records.foreach(record => riderLogger.error(s"feedback_flow_error data: " + record.payload_get))
     }
   }
 
-/*  def doStreamBatchError(records: List[Ums]): Unit = {
-    try {
-      val insertSeq = records.flatMap(record => {
-        val protocolType = record.protocol.`type`.toString
-        val fields = record.schema.fields_get
-        val curTs = currentMillSec
-        record.payload_get.map(tuple => {
-          val umsTsValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "ums_ts_")
-          val streamIdValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "stream_id")
-          val statusValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "status")
-          val resultDescValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "result_desc")
-          val topics =
-            if (UmsFieldType.umsFieldValue(tuple.tuple, fields, "topics") != null)
-              UmsFieldType.umsFieldValue(tuple.tuple, fields, "topics").toString
-            else null
-          FeedbackStreamErr(1, protocolType.toString, umsTsValue.toString, streamIdValue.toString.toLong,
-            statusValue.toString, resultDescValue.toString, topics, curTs)
+  /*  def doStreamBatchError(records: List[Ums]): Unit = {
+      try {
+        val insertSeq = records.flatMap(record => {
+          val protocolType = record.protocol.`type`.toString
+          val fields = record.schema.fields_get
+          val curTs = currentMillSec
+          record.payload_get.map(tuple => {
+            val umsTsValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "ums_ts_")
+            val streamIdValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "stream_id")
+            val statusValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "status")
+            val resultDescValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "result_desc")
+            val topics =
+              if (UmsFieldType.umsFieldValue(tuple.tuple, fields, "topics") != null)
+                UmsFieldType.umsFieldValue(tuple.tuple, fields, "topics").toString
+              else null
+            FeedbackStreamErr(1, protocolType.toString, umsTsValue.toString, streamIdValue.toString.toLong,
+              statusValue.toString, resultDescValue.toString, topics, curTs)
+          })
         })
-      })
-      Await.result(modules.feedbackErrDal.insert(insertSeq), minTimeOut)
-    } catch {
-      case ex: Exception => riderLogger.error(s"process $FEEDBACK_STREAM_BATCH_ERROR message $records failed", ex)
-    }
-  }*/
+        Await.result(modules.feedbackErrDal.insert(insertSeq), minTimeOut)
+      } catch {
+        case ex: Exception => riderLogger.error(s"process $FEEDBACK_STREAM_BATCH_ERROR message $records failed", ex)
+      }
+    }*/
 
   @Deprecated
   def doFeedbackStreamTopicOffset(message: Ums): Unit = {
@@ -217,60 +223,69 @@ object FeedbackProcess extends RiderLogger {
         val riderNamespace = namespaceRiderString(srcNamespace)
         val fields = record.schema.fields_get
         var throughput: Long = 0
-        record.payload_get.map(tuple => {
-          val streamIdValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "stream_id")
-          val flowIdValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "flow_id")
-          val batchIdValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "batch_id")
-          val dataTypeValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "data_type")
-          val topics = UmsFieldType.umsFieldValue(tuple.tuple, fields, "topics")
-          val sinkNamespaceValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "sink_namespace").toString
-          val rddCountValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "rdd_count").toString.toInt
-          val feedbackTime =  UmsFieldType.umsFieldValue(tuple.tuple, fields, "ums_ts_")
-          //todo 兼容0.6.0及之前版本stream feedback数据
-          val cdcTsValue =
-            if (UmsFieldType.umsFieldValue(tuple.tuple, fields, "data_generated_ts") != null)
-              UmsFieldType.umsFieldValue(tuple.tuple, fields, "data_generated_ts").toString.toLong
-            else UmsFieldType.umsFieldValue(tuple.tuple, fields, "data_genereated_ts").toString.toLong
-          val rddTsValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "rdd_generated_ts").toString.toLong
-          val mainDataTsValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "data_process_start_ts").toString.toLong
-          val swiftsTsValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "swifts_start_ts").toString.toLong
-          val sinkTsValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "sink_start_ts").toString.toLong
-          val doneTsValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "done_ts").toString.toLong
+        try{
+            record.payload_get.map(tuple => {
+                val streamIdValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "stream_id")
+                val flowIdValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "flow_id")
+                val batchIdValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "batch_id")
+                val dataTypeValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "data_type")
+                val topics = UmsFieldType.umsFieldValue(tuple.tuple, fields, "topics")
+                val sinkNamespaceValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "sink_namespace").toString
+                val rddCountValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "rdd_count").toString.toInt
+                val feedbackTime = if(RiderConfig.monitor.databaseType.toLowerCase.equals("es")) string2EsDateString(DateUtils.dt2string(UmsFieldType.umsFieldValue(tuple.tuple, fields, "ums_ts_").asInstanceOf[DateTime],DtFormat.TS_DASH_MICROSEC))
+                else DateUtils.dt2string(UmsFieldType.umsFieldValue(tuple.tuple, fields, "ums_ts_").asInstanceOf[DateTime],DtFormat.TS_DASH_SEC)
+                //todo 兼容0.6.0及之前版本stream feedback数据
+                val cdcTsValue: Date =
+                  if (UmsFieldType.umsFieldValue(tuple.tuple, fields, "data_generated_ts") != null)
+                    UmsFieldType.umsFieldValue(tuple.tuple, fields, "data_generated_ts").asInstanceOf[DateTime].toDate
+                  else UmsFieldType.umsFieldValue(tuple.tuple, fields, "data_generated_ts").asInstanceOf[DateTime].toDate
+                val rddTsValue = {
+                  UmsFieldType.umsFieldValue(tuple.tuple, fields, "rdd_generated_ts").asInstanceOf[DateTime].toDate
+                }
+                val mainDataTsValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "data_process_start_ts").asInstanceOf[DateTime].toDate
+                val swiftsTsValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "swifts_start_ts").asInstanceOf[DateTime].toDate
+                val sinkTsValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "sink_start_ts").asInstanceOf[DateTime].toDate
+                val doneTsValue = UmsFieldType.umsFieldValue(tuple.tuple, fields, "done_ts").asInstanceOf[DateTime].toDate
 
-          val riderSinkNamespace = if (sinkNamespaceValue.toString == "") riderNamespace else namespaceRiderString(sinkNamespaceValue.toString)
+                val riderSinkNamespace = if (sinkNamespaceValue.toString == "") riderNamespace else namespaceRiderString(sinkNamespaceValue.toString)
 
-          val interval_data_process_dataums = (mainDataTsValue.toString.toLong - cdcTsValue.toString.toLong) / 1000
-          val interval_data_process_rdd = (rddTsValue.toString.toLong - mainDataTsValue.toString.toLong) / 1000
-          val interval_data_process_done = (doneTsValue.toString.toLong - mainDataTsValue.toString.toLong) / 1000
-          val interval_rdd_swifts = (swiftsTsValue.toString.toLong - rddTsValue.toString.toLong) / 1000
-          val interval_rdd_done = (doneTsValue.toString.toLong - rddTsValue.toString.toLong) / 1000
-          val interval_data_swifts_sink = (sinkTsValue.toString.toLong - swiftsTsValue.toString.toLong) / 1000
-          val interval_data_sink_done = (doneTsValue.toString.toLong - sinkTsValue.toString.toLong) / 1000
+                val interval_data_process_dataums = (mainDataTsValue.getTime - cdcTsValue.getTime) / 1000
+                val interval_data_process_rdd = (mainDataTsValue.getTime - rddTsValue.getTime) / 1000
+                val interval_data_process_done = (doneTsValue.getTime - rddTsValue.getTime) / 1000
+                val interval_rdd_swifts = (swiftsTsValue.getTime - mainDataTsValue.getTime) / 1000
+                val interval_rdd_done = (doneTsValue.getTime - rddTsValue.getTime) / 1000
+                val interval_data_swifts_sink = (sinkTsValue.getTime - swiftsTsValue.getTime) / 1000
+                val interval_data_sink_done = (doneTsValue.getTime - sinkTsValue.getTime) / 1000
 
-          if (interval_rdd_done == 0L) {
-            throughput = rddCountValue.toString.toInt
-          } else throughput = rddCountValue.toString.toInt / interval_rdd_done
+                if (interval_rdd_done == 0L) {
+                  throughput = rddCountValue.toString.toInt
+                } else throughput = rddCountValue.toString.toInt / interval_rdd_done
 
-          val monitorInfo = MonitorInfo(0L, CacheMap.getProjectIdByStreamId(streamIdValue.toString.toLong).getOrElse(0L),batchIdValue.toString,
-            streamIdValue.toString.toLong,flowIdValue.toString.toLong,
-            riderNamespace,riderSinkNamespace,dataTypeValue.toString,
-            rddCountValue.toString.toInt, if (topics == null) "" else topics.toString, throughput,
-            string2EsDateString(DateUtils.dt2string(cdcTsValue.toString.toLong * 1000, DtFormat.TS_DASH_MICROSEC)),
-            string2EsDateString(DateUtils.dt2string(rddTsValue.toString.toLong * 1000, DtFormat.TS_DASH_MICROSEC)),
-            string2EsDateString(DateUtils.dt2string(mainDataTsValue.toString.toLong * 1000, DtFormat.TS_DASH_MICROSEC)),
-            string2EsDateString(DateUtils.dt2string(swiftsTsValue.toString.toLong * 1000, DtFormat.TS_DASH_MICROSEC)),
-            string2EsDateString(DateUtils.dt2string(sinkTsValue.toString.toLong * 1000, DtFormat.TS_DASH_MICROSEC)),
-            string2EsDateString(DateUtils.dt2string(doneTsValue.toString.toLong * 1000, DtFormat.TS_DASH_MICROSEC)),
-            Interval(interval_data_process_dataums, interval_data_process_rdd, interval_rdd_swifts,  interval_data_process_done,
-                interval_data_swifts_sink, interval_data_sink_done),feedbackTime.toString+"+08:00")
-          monitorInfo
-        })
+                val monitorInfo = MonitorInfo(0L, CacheMap.getProjectIdByStreamId(streamIdValue.toString.toLong).getOrElse(0L), batchIdValue.toString,
+                  streamIdValue.toString.toLong, flowIdValue.toString.toLong,
+                  riderNamespace, riderSinkNamespace, dataTypeValue.toString,
+                  rddCountValue.toString.toInt, if (topics == null) "" else topics.toString, throughput,
+                  if(RiderConfig.monitor.databaseType.toLowerCase.equals("es"))string2EsDateString(DateUtils.dt2string(cdcTsValue, DtFormat.TS_DASH_MICROSEC)) else DateUtils.dt2string(cdcTsValue, DtFormat.TS_DASH_SEC),
+                  if(RiderConfig.monitor.databaseType.toLowerCase.equals("es"))string2EsDateString(DateUtils.dt2string(rddTsValue, DtFormat.TS_DASH_MICROSEC)) else DateUtils.dt2string(rddTsValue, DtFormat.TS_DASH_SEC),
+                  if(RiderConfig.monitor.databaseType.toLowerCase.equals("es"))string2EsDateString(DateUtils.dt2string(mainDataTsValue, DtFormat.TS_DASH_MICROSEC)) else DateUtils.dt2string(mainDataTsValue, DtFormat.TS_DASH_SEC),
+                  if(RiderConfig.monitor.databaseType.toLowerCase.equals("es"))string2EsDateString(DateUtils.dt2string(swiftsTsValue, DtFormat.TS_DASH_MICROSEC)) else DateUtils.dt2string(swiftsTsValue, DtFormat.TS_DASH_SEC),
+                  if(RiderConfig.monitor.databaseType.toLowerCase.equals("es"))string2EsDateString(DateUtils.dt2string(sinkTsValue, DtFormat.TS_DASH_MICROSEC)) else DateUtils.dt2string(sinkTsValue, DtFormat.TS_DASH_SEC),
+                  if(RiderConfig.monitor.databaseType.toLowerCase.equals("es"))string2EsDateString(DateUtils.dt2string(doneTsValue, DtFormat.TS_DASH_MICROSEC)) else DateUtils.dt2string(doneTsValue, DtFormat.TS_DASH_SEC),
+                  Interval(interval_data_process_dataums, interval_data_process_rdd, interval_rdd_swifts, interval_data_process_done,
+                    interval_data_swifts_sink, interval_data_sink_done), feedbackTime)
+                monitorInfo
+            })
+        }catch{
+          case ex:Throwable =>
+            Seq()
+        }
       })
       if (RiderConfig.monitor.databaseType.toLowerCase.equals("es"))
         ElasticSearch.insertFlowStatToES(insertSeq)
       else Await.result(modules.monitorInfoDal.insert(insertSeq), minTimeOut)
     } catch {
-      case ex: Exception => riderLogger.error(s"process $FEEDBACK_SPARKX_FLOW_STATS message $records failed", ex)
+      case ex: Exception => riderLogger.error(s"process $FEEDBACK_SPARKX_FLOW_STATS message failed", ex)
+        records.foreach(record => riderLogger.error(s"feedback_spark_flow_stats data: " + record.payload_get))
     }
   }
 

@@ -39,12 +39,13 @@ object RouterStarter extends App with EdpLogging {
   logInfo("RouterConfig:" + args(0))
   val config: WormholeConfig = JsonUtils.json2caseClass[WormholeConfig](args(0))
   val appId = SparkUtils.getAppId
-  WormholeKafkaProducer.init(config.kafka_output.brokers, config.kafka_output.config,config.kerberos)
+  WormholeKafkaProducer.initWithoutAcksAll(config.kafka_output.brokers, config.kafka_output.config,config.kerberos)
 
   val sparkConf = new SparkConf()
     .setMaster(config.spark_config.master)
     .set("dfs.client.block.write.replace-datanode-on-failure.policy", "ALWAYS")
     .set("dfs.client.block.write.replace-datanode-on-failure.enable", "true")
+    .set("spark.streaming.stopGracefullyOnShutdown","true")
     .set(if (SparkUtils.isLocalMode(config.spark_config.master)) "spark.sql.warehouse.dir" else "",
       if (SparkUtils.isLocalMode(config.spark_config.master)) "file:///" else "")
     .setAppName(config.spark_config.stream_name)
@@ -57,7 +58,7 @@ object RouterStarter extends App with EdpLogging {
 
   val kafkaInput: KafkaInputConfig = OffsetPersistenceManager.initOffset(config, appId)
   val kafkaStream = createKafkaStream(ssc, kafkaInput)
-  RouterMainProcess.process(kafkaStream, config, session, appId,kafkaInput)
+  RouterMainProcess.process(kafkaStream, config, session, appId,kafkaInput,ssc)
 
   logInfo("all init finish,to start spark streaming")
   SparkContextUtils.startSparkStreaming(ssc)
