@@ -34,7 +34,7 @@ import edp.wormhole.flinkx.deserialization.WormholeDeserializationStringSchema
 import edp.wormhole.flinkx.sink.SinkProcess
 import edp.wormhole.flinkx.swifts.{FlinkxTimeCharacteristicConstants, ParseSwiftsSql, SwiftsProcess}
 import edp.wormhole.flinkx.udaf.{AdjacentSub, FirstValue, LastValue}
-import edp.wormhole.flinkx.udf.{UdafRegister, UdfRegister}
+import edp.wormhole.flinkx.udf.{UdafRegister, UdfRegister, WhMapToString}
 import edp.wormhole.flinkx.util.FlinkSchemaUtils._
 import edp.wormhole.flinkx.util.{FlinkxTimestampExtractor, UmsFlowStartUtils, WormholeFlinkxConfigUtils}
 import edp.wormhole.kafka.WormholeKafkaProducer
@@ -114,6 +114,7 @@ class WormholeFlinkMainProcess(config: WormholeFlinkxConfig, umsFlowStart: Ums) 
     tableEnv.registerFunction(BuiltInFunctions.ADJACENTSUB.toString, new AdjacentSub())
     tableEnv.registerFunction(BuiltInFunctions.FIRSTVALUE.toString, new FirstValue())
     tableEnv.registerFunction(BuiltInFunctions.LASTVALUE.toString, new LastValue())
+    tableEnv.registerFunction(BuiltInFunctions.MAPTOSTRING.toString, new WhMapToString())
 
     config.udf_config.foreach(udf => {
       val udfName = udf.functionName
@@ -142,7 +143,8 @@ class WormholeFlinkMainProcess(config: WormholeFlinkxConfig, umsFlowStart: Ums) 
     properties.setProperty("zookeeper.connect", config.zookeeper_address)
     properties.setProperty("group.id", config.kafka_input.groupId)
     properties.setProperty("session.timeout.ms", config.kafka_input.sessionTimeout)
-    properties.setProperty("enable.auto.commit", config.kafka_input.autoCommit.toString)
+    properties.setProperty("enable.auto.commit", "true")
+    properties.setProperty("auto.commit.interval.ms", 5000.toString)
     //config.kafka_input.kafka_base_config.`max.partition.fetch.bytes`.toString
     properties.setProperty("max.partition.fetch.bytes", 10485760.toString)
     if (config.kafka_input.kafka_base_config.kerberos) {
